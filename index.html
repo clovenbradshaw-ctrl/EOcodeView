@@ -388,8 +388,12 @@ let state = {
   logVisible: true,
   // GitHub
   ghRepo: 'clovenbradshaw-ctrl/EO-DB',
+  ghBranch: '',
   ghTree: null,
   ghLoading: false,
+  // Base URL used by the preview iframe to resolve relative asset paths
+  // (set when the current source was loaded from GitHub).
+  previewBaseUrl: '',
   // Matrix
   mx: { hs: 'https://hyphae.social:8008', user: '', pass: '', token: '', userId: '', rooms: [], roomNames: {}, selectedRoom: '', snapshots: [], status: '', statusOk: true },
 };
@@ -419,7 +423,15 @@ function updateLineNums() {
 }
 
 function updatePreview() {
-  $('preview').srcdoc = state.code;
+  $('preview').srcdoc = buildPreviewDoc(state.code, state.previewBaseUrl);
+}
+
+function buildPreviewDoc(code, baseUrl) {
+  if (!baseUrl) return code;
+  const baseTag = `<base href="${baseUrl.replace(/"/g, '&quot;')}">`;
+  if (/<head[^>]*>/i.test(code)) return code.replace(/<head[^>]*>/i, m => m + baseTag);
+  if (/<html[^>]*>/i.test(code)) return code.replace(/<html[^>]*>/i, m => m + `<head>${baseTag}</head>`);
+  return `<head>${baseTag}</head>` + code;
 }
 
 function setViewport(idx) {
@@ -535,6 +547,7 @@ function handleUpload(e) {
   reader.onload = ev => {
     state.code = ev.target.result;
     state.fileName = file.name;
+    state.previewBaseUrl = '';
     editor().value = state.code;
     updateLineNums();
     updatePreview();
@@ -554,10 +567,15 @@ async function ghFetchTree() {
   state.ghLoading = true;
   renderSidebar();
   try {
+    let branch = 'main';
     let r = await fetch(`https://api.github.com/repos/${state.ghRepo}/git/trees/main?recursive=1`);
-    if (!r.ok) r = await fetch(`https://api.github.com/repos/${state.ghRepo}/git/trees/master?recursive=1`);
+    if (!r.ok) {
+      branch = 'master';
+      r = await fetch(`https://api.github.com/repos/${state.ghRepo}/git/trees/master?recursive=1`);
+    }
     if (!r.ok) throw new Error('Could not fetch repo');
     const data = await r.json();
+    state.ghBranch = branch;
     state.ghTree = buildGhTree(data.tree || []);
   } catch (err) {
     state.ghTree = null;
@@ -569,12 +587,14 @@ async function ghFetchTree() {
 
 async function ghLoadFile(path) {
   try {
-    const r = await fetch(`https://api.github.com/repos/${state.ghRepo}/contents/${path}`);
+    const r = await fetch(`https://api.github.com/repos/${state.ghRepo}/contents/${encodeURI(path)}?ref=${encodeURIComponent(state.ghBranch || 'main')}`);
     if (!r.ok) throw new Error('Could not fetch file');
     const data = await r.json();
     const content = atob(data.content.replace(/\n/g, ''));
     state.code = content;
     state.fileName = path.split('/').pop();
+    const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    state.previewBaseUrl = `https://raw.githubusercontent.com/${state.ghRepo}/${state.ghBranch || 'main'}/${dir}`;
     editor().value = state.code;
     updateLineNums();
     updatePreview();
