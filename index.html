@@ -391,8 +391,18 @@ let state = {
   ghTree: null,
   ghLoading: false,
   // Matrix
-  mx: { hs: 'https://hyphae.social:8008', user: '', pass: '', token: '', userId: '', rooms: [], roomNames: {}, selectedRoom: '', snapshots: [], status: '', statusOk: true },
+  mx: {
+    hs: '', hsOverride: '', user: '', pass: '', token: '', userId: '',
+    rooms: [], roomNames: {}, roomTypes: {}, selectedRoom: '',
+    snapshots: [], manifest: null, status: '', statusOk: true,
+    importing: false,
+  },
 };
+
+// If a room event payload (JSON) is larger than this many bytes, upload it
+// as a media blob and emit a pointer event instead. Matrix events are capped
+// near 64KB; 20KB leaves headroom for headers and framing.
+const MX_EVENT_OVERFLOW_BYTES = 20000;
 
 const VIEWPORTS = [
   { label: 'Desktop', w: '100%' },
@@ -514,13 +524,14 @@ function doCommit() {
   state.baseCode = state.code;
   updateLineNums();
 
-  // Push to Matrix if connected
+  // Push to Matrix if connected. Use overflow-aware send so large diffs
+  // get stored in the media store with a pointer event in the room.
   if (state.mx.token && state.mx.selectedRoom) {
-    mxSendEvent(state.mx.selectedRoom, 'com.eo.changelog', {
+    mxSendOrOverflow(state.mx.selectedRoom, 'com.eo.changelog', {
       ops: ops.map(o => ({ ...o, ...classify(o.type) })),
       fileName: state.fileName,
       timestamp: Date.now(),
-    }).catch(() => {});
+    }, { filename: state.fileName, summary: `${ops.length} ops on ${state.fileName}` }).catch(() => {});
   }
 }
 
@@ -626,29 +637,57 @@ function renderGhTree(node, depth) {
    Matrix
    ═══════════════════════════════════════════ */
 
+// Parse an entered username (either "alice" or "@alice:server.tld" or
+// "alice:server.tld") into { localpart, server }. Returns server === null
+// when the input has no server part.
+function mxParseUserId(input) {
+  let s = (input || '').trim();
+  if (s.startsWith('@')) s = s.slice(1);
+  const i = s.indexOf(':');
+  if (i === -1) return { localpart: s, server: null };
+  return { localpart: s.slice(0, i), server: s.slice(i + 1) };
+}
+
+// Discover a homeserver base URL for a domain via .well-known/matrix/client.
+// Falls back to https://<domain> if discovery isn't available.
+async function mxDiscoverHomeserver(domain) {
+  try {
+    const r = await fetch(`https://${domain}/.well-known/matrix/client`, { method: 'GET' });
+    if (r.ok) {
+      const wk = await r.json();
+      const base = wk?.['m.homeserver']?.base_url;
+      if (base) return base.replace(/\/$/, '');
+    }
+  } catch {}
+  return `https://${domain}`;
+}
+
 async function mxLogin() {
-  const { hs, user, pass } = state.mx;
-  state.mx.status = 'Connecting...'; state.mx.statusOk = true; renderSidebar();
+  const { user, pass, hsOverride } = state.mx;
+  const parsed = mxParseUserId(user);
+  state.mx.status = 'Resolving homeserver…'; state.mx.statusOk = true; renderSidebar();
+
+  let hs = hsOverride?.trim();
+  if (!hs) {
+    if (!parsed.server) {
+      state.mx.status = 'Enter a full Matrix ID (e.g. @you:example.org) or set Homeserver override';
+      state.mx.statusOk = false; renderSidebar(); return;
+    }
+    hs = await mxDiscoverHomeserver(parsed.server);
+  }
+  state.mx.hs = hs;
+
+  state.mx.status = `Connecting to ${hs}…`; renderSidebar();
   try {
     const r = await fetch(`${hs}/_matrix/client/v3/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'm.login.password', identifier: { type: 'm.id.user', user }, password: pass }),
+      body: JSON.stringify({ type: 'm.login.password', identifier: { type: 'm.id.user', user: parsed.localpart }, password: pass }),
     });
     if (!r.ok) throw new Error((await r.json()).error || r.statusText);
     const data = await r.json();
     state.mx.token = data.access_token;
     state.mx.userId = data.user_id;
-    // Fetch rooms
-    const rr = await fetch(`${hs}/_matrix/client/v3/joined_rooms`, { headers: { Authorization: `Bearer ${data.access_token}` } });
-    const rooms = (await rr.json()).joined_rooms || [];
-    state.mx.rooms = rooms;
-    // Fetch room names
-    for (const rid of rooms.slice(0, 30)) {
-      try {
-        const nr = await fetch(`${hs}/_matrix/client/v3/rooms/${encodeURIComponent(rid)}/state/m.room.name`, { headers: { Authorization: `Bearer ${data.access_token}` } });
-        if (nr.ok) state.mx.roomNames[rid] = (await nr.json()).name;
-      } catch {}
-    }
+    await mxRefreshRooms();
     state.mx.status = `Logged in as ${data.user_id}`; state.mx.statusOk = true;
   } catch (err) {
     state.mx.status = err.message; state.mx.statusOk = false;
@@ -656,24 +695,99 @@ async function mxLogin() {
   renderSidebar();
 }
 
-async function mxCreateRoom() {
+async function mxRefreshRooms() {
+  const { hs, token } = state.mx;
+  const rr = await fetch(`${hs}/_matrix/client/v3/joined_rooms`, { headers: { Authorization: `Bearer ${token}` } });
+  const rooms = (await rr.json()).joined_rooms || [];
+  state.mx.rooms = rooms;
+  state.mx.roomNames = {};
+  state.mx.roomTypes = {};
+  for (const rid of rooms.slice(0, 50)) {
+    try {
+      const nr = await fetch(`${hs}/_matrix/client/v3/rooms/${encodeURIComponent(rid)}/state/m.room.name`, { headers: { Authorization: `Bearer ${token}` } });
+      if (nr.ok) state.mx.roomNames[rid] = (await nr.json()).name;
+    } catch {}
+    try {
+      const cr = await fetch(`${hs}/_matrix/client/v3/rooms/${encodeURIComponent(rid)}/state/m.room.create`, { headers: { Authorization: `Bearer ${token}` } });
+      if (cr.ok) {
+        const c = await cr.json();
+        if (c.type) state.mx.roomTypes[rid] = c.type;
+      }
+    } catch {}
+  }
+}
+
+async function mxCreateRoom(opts = {}) {
+  const body = {
+    name: opts.name,
+    topic: opts.topic || 'EO TryIt workspace',
+    visibility: 'private',
+    preset: 'private_chat',
+  };
+  if (opts.spaceParent) {
+    body.initial_state = [{ type: 'm.space.parent', state_key: opts.spaceParent, content: { canonical: true, via: [state.mx.userId.split(':')[1]] } }];
+  }
+  if (opts.isSpace) {
+    body.creation_content = { type: 'm.space' };
+  }
+  const r = await fetch(`${state.mx.hs}/_matrix/client/v3/createRoom`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || 'createRoom failed');
+  const rid = (await r.json()).room_id;
+  state.mx.rooms.unshift(rid);
+  state.mx.roomNames[rid] = opts.name;
+  if (opts.isSpace) state.mx.roomTypes[rid] = 'm.space';
+  return rid;
+}
+
+async function mxCreateRoomFromInput() {
   const name = $('mx-new-room')?.value?.trim();
   if (!name) return;
   try {
-    const r = await fetch(`${state.mx.hs}/_matrix/client/v3/createRoom`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
-      body: JSON.stringify({ name, topic: 'EO TryIt Editor workspace', visibility: 'private' }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error || 'Failed');
-    const rid = (await r.json()).room_id;
-    state.mx.rooms.unshift(rid);
-    state.mx.roomNames[rid] = name;
+    const rid = await mxCreateRoom({ name, topic: 'EO TryIt workspace' });
     state.mx.selectedRoom = rid;
     state.mx.status = `Created: ${name}`; state.mx.statusOk = true;
+    mxLoadRoomData();
   } catch (err) {
     state.mx.status = err.message; state.mx.statusOk = false;
   }
   renderSidebar();
+}
+
+// Set up a workspace: a Matrix Space plus a child room that holds the
+// timeline + file manifest. Returns the child room id (used for events).
+async function mxCreateWorkspace() {
+  const name = $('mx-new-room')?.value?.trim() || 'EO Workspace';
+  state.mx.status = 'Creating workspace…'; renderSidebar();
+  try {
+    const spaceId = await mxCreateRoom({ name, isSpace: true, topic: `EO workspace: ${name}` });
+    const repoId = await mxCreateRoom({ name: `${name} · main`, spaceParent: spaceId, topic: 'Edits & file manifest' });
+    // Add the child to the space too.
+    await fetch(`${state.mx.hs}/_matrix/client/v3/rooms/${encodeURIComponent(spaceId)}/state/m.space.child/${encodeURIComponent(repoId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
+      body: JSON.stringify({ via: [state.mx.userId.split(':')[1]], suggested: true }),
+    }).catch(() => {});
+    state.mx.selectedRoom = repoId;
+    state.mx.status = `Workspace ready: ${name}`; state.mx.statusOk = true;
+    mxLoadRoomData();
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false;
+  }
+  renderSidebar();
+}
+
+// Upload arbitrary bytes/text to the homeserver's media store. Returns mxc URI.
+async function mxUploadMedia(content, filename, mimeType) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType || 'application/octet-stream' });
+  const ur = await fetch(`${state.mx.hs}/_matrix/media/v3/upload?filename=${encodeURIComponent(filename || 'blob')}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${state.mx.token}`, 'Content-Type': mimeType || blob.type || 'application/octet-stream' },
+    body: blob,
+  });
+  if (!ur.ok) throw new Error('Media upload failed: ' + ur.status);
+  return (await ur.json()).content_uri;
 }
 
 async function mxSendEvent(roomId, type, content) {
@@ -684,29 +798,164 @@ async function mxSendEvent(roomId, type, content) {
   });
 }
 
+// Send a timeline event; if its JSON exceeds MX_EVENT_OVERFLOW_BYTES, upload
+// the payload to the media store and send a pointer event instead.
+async function mxSendOrOverflow(roomId, type, content, hint = {}) {
+  const json = JSON.stringify(content);
+  if (json.length <= MX_EVENT_OVERFLOW_BYTES) {
+    return mxSendEvent(roomId, type, content);
+  }
+  const mxc = await mxUploadMedia(json, (hint.filename || type) + '.json', 'application/json');
+  return mxSendEvent(roomId, type + '.pointer', {
+    overflow: true, original_type: type, mxc_uri: mxc,
+    size: json.length, summary: hint.summary || '',
+    timestamp: Date.now(),
+  });
+}
+
 async function mxSaveSnapshot() {
   if (!state.mx.token || !state.mx.selectedRoom) return;
-  state.mx.status = 'Saving...'; state.mx.statusOk = true; renderSidebar();
+  state.mx.status = 'Saving…'; state.mx.statusOk = true; renderSidebar();
   try {
-    // Upload to media store
-    const blob = new Blob([state.code], { type: 'text/html' });
-    const ur = await fetch(`${state.mx.hs}/_matrix/media/v3/upload?filename=${encodeURIComponent(state.fileName)}`, {
-      method: 'POST', headers: { Authorization: `Bearer ${state.mx.token}`, 'Content-Type': 'text/html' }, body: blob,
-    });
-    if (!ur.ok) throw new Error('Upload failed');
-    const mxcUri = (await ur.json()).content_uri;
-    // Send snapshot event
+    const mxcUri = await mxUploadMedia(state.code, state.fileName, 'text/html');
     await mxSendEvent(state.mx.selectedRoom, 'com.eo.snapshot', {
       filename: state.fileName, mxc_uri: mxcUri, timestamp: Date.now(),
       line_count: state.code.split('\n').length, size: state.code.length,
     });
     addLogEntries([{ type: 'save', desc: `Snapshot → Matrix (${mxcUri.slice(0, 32)}…)` }], 'matrix');
     state.mx.status = 'Saved ✓'; state.mx.statusOk = true;
-    mxLoadSnapshots();
+    mxLoadRoomData();
   } catch (err) {
     state.mx.status = err.message; state.mx.statusOk = false;
   }
   renderSidebar();
+}
+
+// Import the currently-loaded GitHub repo tree into the selected room.
+// Each file becomes a media blob; a single manifest state event maps paths
+// to mxc URIs. A timeline event records the import.
+async function mxImportRepoToRoom() {
+  if (!state.mx.token || !state.mx.selectedRoom) {
+    state.mx.status = 'Select a room first'; state.mx.statusOk = false; renderSidebar(); return;
+  }
+  if (!state.ghTree) {
+    state.mx.status = 'Load a GitHub repo first'; state.mx.statusOk = false; renderSidebar(); return;
+  }
+  const files = [];
+  const walk = node => {
+    for (const f of node.files) files.push(f);
+    for (const d of Object.values(node.children)) walk(d);
+  };
+  walk(state.ghTree);
+  if (files.length === 0) { state.mx.status = 'Empty tree'; state.mx.statusOk = false; renderSidebar(); return; }
+
+  state.mx.importing = true;
+  state.mx.status = `Importing 0/${files.length}…`; state.mx.statusOk = true; renderSidebar();
+
+  const manifest = { repo: state.ghRepo, files: {}, imported_at: Date.now() };
+  let ok = 0, failed = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    state.mx.status = `Importing ${i+1}/${files.length}: ${f.path}`; renderSidebar();
+    try {
+      const r = await fetch(`https://api.github.com/repos/${state.ghRepo}/contents/${f.path}`);
+      if (!r.ok) { failed++; continue; }
+      const data = await r.json();
+      // GitHub blob >1MB requires a different endpoint; skip those silently.
+      if (!data.content) { failed++; continue; }
+      const bin = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+      const mxc = await mxUploadMedia(new Blob([bin]), f.name, guessMime(f.name));
+      manifest.files[f.path] = { mxc_uri: mxc, size: bin.length, sha: data.sha };
+      ok++;
+    } catch {
+      failed++;
+    }
+  }
+
+  // Manifest itself may be large; use overflow-aware send for state. Matrix
+  // state events also have size limits, so if the manifest is big, store as
+  // a blob and reference it from a small state event.
+  const manifestJson = JSON.stringify(manifest);
+  let stateContent;
+  if (manifestJson.length > MX_EVENT_OVERFLOW_BYTES) {
+    const mxc = await mxUploadMedia(manifestJson, 'manifest.json', 'application/json');
+    stateContent = { overflow: true, mxc_uri: mxc, repo: state.ghRepo, file_count: ok, imported_at: manifest.imported_at };
+  } else {
+    stateContent = manifest;
+  }
+  await fetch(`${state.mx.hs}/_matrix/client/v3/rooms/${encodeURIComponent(state.mx.selectedRoom)}/state/com.eo.repo.manifest/`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
+    body: JSON.stringify(stateContent),
+  });
+
+  await mxSendOrOverflow(state.mx.selectedRoom, 'com.eo.repo.import', {
+    repo: state.ghRepo, file_count: ok, failed, imported_at: manifest.imported_at,
+  }, { filename: 'import', summary: `${state.ghRepo}: ${ok} files` });
+
+  addLogEntries([{ type: 'bulk', desc: `Imported ${ok} files from ${state.ghRepo} (${failed} skipped)` }], 'matrix');
+  state.mx.importing = false;
+  state.mx.status = `Imported ${ok} files${failed ? ` (${failed} failed)` : ''}`;
+  state.mx.statusOk = failed === 0;
+  mxLoadRoomData();
+}
+
+function guessMime(name) {
+  const ext = name.toLowerCase().split('.').pop();
+  return {
+    html: 'text/html', htm: 'text/html', css: 'text/css',
+    js: 'application/javascript', jsx: 'application/javascript',
+    ts: 'application/typescript', tsx: 'application/typescript',
+    json: 'application/json', md: 'text/markdown', txt: 'text/plain',
+    svg: 'image/svg+xml', xml: 'application/xml',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  }[ext] || 'application/octet-stream';
+}
+
+async function mxLoadRoomData() {
+  await Promise.all([mxLoadSnapshots(), mxLoadManifest()]);
+}
+
+async function mxLoadManifest() {
+  state.mx.manifest = null;
+  if (!state.mx.token || !state.mx.selectedRoom) { renderSidebar(); return; }
+  try {
+    const r = await fetch(`${state.mx.hs}/_matrix/client/v3/rooms/${encodeURIComponent(state.mx.selectedRoom)}/state/com.eo.repo.manifest/`, {
+      headers: { Authorization: `Bearer ${state.mx.token}` },
+    });
+    if (!r.ok) { renderSidebar(); return; }
+    let m = await r.json();
+    if (m.overflow && m.mxc_uri) {
+      const text = await mxDownloadMedia(m.mxc_uri);
+      m = JSON.parse(text);
+    }
+    state.mx.manifest = m;
+  } catch {}
+  renderSidebar();
+}
+
+async function mxDownloadMedia(mxcUri) {
+  const [, serverName, mediaId] = mxcUri.match(/^mxc:\/\/([^/]+)\/(.+)$/) || [];
+  if (!serverName) throw new Error('Invalid mxc URI');
+  const r = await fetch(`${state.mx.hs}/_matrix/media/v3/download/${serverName}/${mediaId}`);
+  if (!r.ok) throw new Error('Download failed');
+  return r.text();
+}
+
+async function mxLoadManifestFile(path) {
+  if (!state.mx.manifest?.files?.[path]) return;
+  try {
+    const content = await mxDownloadMedia(state.mx.manifest.files[path].mxc_uri);
+    state.code = content;
+    state.fileName = path.split('/').pop();
+    editor().value = state.code;
+    updateLineNums();
+    updatePreview();
+    $('filename').textContent = state.fileName;
+    addLogEntries([{ type: 'load', desc: `Loaded ${path} from Matrix manifest` }], 'matrix');
+    state.baseCode = state.code;
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false; renderSidebar();
+  }
 }
 
 async function mxLoadSnapshots() {
@@ -751,13 +1000,14 @@ async function mxLoadSnapshot(mxcUri, name) {
 
 function mxLogout() {
   state.mx.token = ''; state.mx.userId = ''; state.mx.rooms = [];
-  state.mx.roomNames = {}; state.mx.selectedRoom = ''; state.mx.snapshots = [];
+  state.mx.roomNames = {}; state.mx.roomTypes = {}; state.mx.selectedRoom = '';
+  state.mx.snapshots = []; state.mx.manifest = null;
   state.mx.status = ''; renderSidebar();
 }
 
 function mxSelectRoom(rid) {
   state.mx.selectedRoom = rid;
-  mxLoadSnapshots();
+  mxLoadRoomData();
 }
 
 /* ═══════════════════════════════════════════
@@ -783,21 +1033,37 @@ function renderSidebar() {
   } else {
     if (!state.mx.token) {
       el.innerHTML = `
-        <div class="mx-field"><label>Homeserver</label><input id="mx-hs" value="${escHtml(state.mx.hs)}" onchange="state.mx.hs=this.value"></div>
-        <div class="mx-field"><label>Username</label><input id="mx-user" value="${escHtml(state.mx.user)}" onchange="state.mx.user=this.value" placeholder="username"></div>
+        <div class="mx-field"><label>Matrix ID</label><input id="mx-user" value="${escHtml(state.mx.user)}" onchange="state.mx.user=this.value" placeholder="@you:example.org"></div>
         <div class="mx-field"><label>Password</label><input id="mx-pass" type="password" value="" onchange="state.mx.pass=this.value" onkeydown="if(event.key==='Enter')mxLogin()"></div>
+        <details style="margin:4px 0 8px"><summary style="font-size:10px;color:var(--fg3);cursor:pointer;text-transform:uppercase;letter-spacing:.05em">Homeserver override</summary>
+          <div class="mx-field" style="margin-top:6px"><input id="mx-hs" value="${escHtml(state.mx.hsOverride)}" onchange="state.mx.hsOverride=this.value" placeholder="https://example.org (auto-detected)"></div>
+        </details>
         <button class="primary" onclick="mxLogin()" style="width:100%;margin-top:4px">Login</button>
         ${state.mx.status ? `<div class="mx-status ${state.mx.statusOk?'ok':'err'}">${escHtml(state.mx.status)}</div>` : ''}`;
     } else {
-      let html = `<div style="font-size:11px;color:var(--green);margin-bottom:8px">● ${escHtml(state.mx.userId)}</div>`;
-      html += `<div class="mx-field"><label>Room</label><select onchange="mxSelectRoom(this.value)"><option value="">Select a room…</option>`;
+      let html = `<div style="font-size:11px;color:var(--green);margin-bottom:2px">● ${escHtml(state.mx.userId)}</div>`;
+      html += `<div style="font-size:10px;color:var(--fg3);margin-bottom:8px">${escHtml(state.mx.hs)}</div>`;
+      html += `<div class="mx-field"><label>Workspace room</label><select onchange="mxSelectRoom(this.value)"><option value="">Select a room…</option>`;
       for (const r of state.mx.rooms) {
-        html += `<option value="${escHtml(r)}" ${r === state.mx.selectedRoom ? 'selected' : ''}>${escHtml(state.mx.roomNames[r] || r)}</option>`;
+        const tag = state.mx.roomTypes[r] === 'm.space' ? ' [space]' : '';
+        html += `<option value="${escHtml(r)}" ${r === state.mx.selectedRoom ? 'selected' : ''}>${escHtml((state.mx.roomNames[r] || r) + tag)}</option>`;
       }
       html += `</select></div>`;
-      html += `<div style="display:flex;gap:4px;margin-bottom:6px"><input id="mx-new-room" placeholder="New room name" onkeydown="if(event.key==='Enter')mxCreateRoom()"><button onclick="mxCreateRoom()">+</button></div>`;
-      html += `<button class="primary" onclick="mxSaveSnapshot()" style="width:100%;margin-bottom:6px" ${!state.mx.selectedRoom?'disabled':''}>↑ Save Snapshot</button>`;
+      html += `<div style="display:flex;gap:4px;margin-bottom:4px"><input id="mx-new-room" placeholder="New workspace name"><button onclick="mxCreateRoomFromInput()" title="Plain room">Room</button><button onclick="mxCreateWorkspace()" title="Space + main room" class="primary">Space</button></div>`;
+      html += `<button class="primary" onclick="mxSaveSnapshot()" style="width:100%;margin-bottom:4px" ${!state.mx.selectedRoom?'disabled':''}>↑ Save Snapshot</button>`;
+      html += `<button onclick="mxImportRepoToRoom()" style="width:100%;margin-bottom:6px" ${(!state.mx.selectedRoom||!state.ghTree||state.mx.importing)?'disabled':''}>${state.mx.importing ? 'Importing…' : '⇪ Import GitHub repo'}</button>`;
       if (state.mx.status) html += `<div class="mx-status ${state.mx.statusOk?'ok':'err'}">${escHtml(state.mx.status)}</div>`;
+
+      if (state.mx.manifest?.files) {
+        const paths = Object.keys(state.mx.manifest.files).sort();
+        html += `<div style="margin-top:8px"><label>Repo files (${paths.length}) · ${escHtml(state.mx.manifest.repo || '')}</label>`;
+        for (const p of paths.slice(0, 100)) {
+          html += `<div class="tree-file" style="padding-left:6px" onclick="mxLoadManifestFile('${p.replace(/'/g, "\\'")}')">${escHtml(p)}</div>`;
+        }
+        if (paths.length > 100) html += `<div style="font-size:10px;color:var(--fg3);padding:4px 6px">…and ${paths.length - 100} more</div>`;
+        html += '</div>';
+      }
+
       if (state.mx.snapshots.length > 0) {
         html += `<div style="margin-top:8px"><label>Snapshots</label>`;
         for (const s of state.mx.snapshots) {
