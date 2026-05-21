@@ -559,6 +559,9 @@ async function ghFetchTree() {
     if (!r.ok) throw new Error('Could not fetch repo');
     const data = await r.json();
     state.ghTree = buildGhTree(data.tree || []);
+    const indexFile = (data.tree || []).find(it => it.type === 'blob' && it.path === 'index.html')
+      || (data.tree || []).find(it => it.type === 'blob' && it.path.toLowerCase().endsWith('/index.html'));
+    if (indexFile) ghLoadFile(indexFile.path);
   } catch (err) {
     state.ghTree = null;
     alert('GitHub error: ' + err.message);
