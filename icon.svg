@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0b0b15"/>
+  <rect x="48" y="48" width="416" height="416" rx="72" fill="none" stroke="#1e1e36" stroke-width="4"/>
+  <text x="256" y="304" text-anchor="middle"
+        font-family="IBM Plex Mono, Cascadia Code, Consolas, monospace"
+        font-weight="700" font-size="232" fill="#c4b5fd">EO</text>
+  <circle cx="396" cy="232" r="28" fill="#a78bfa"/>
+</svg>

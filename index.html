@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b15">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="EO TryIt">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="./icon.svg">
+<link rel="apple-touch-icon" href="./icon.svg">
 <title>EO TryIt Editor</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=DM+Sans:wght@400;500;700&display=swap');
@@ -95,6 +102,14 @@ label { font-size: 10px; color: var(--fg3); text-transform: uppercase; letter-sp
 
 #upload-input { display: none; }
 
+/* PWA update toast */
+#pwa-toast { position: fixed; bottom: 16px; right: 16px; z-index: 9999; background: var(--bg2); border: 1px solid var(--accent); border-radius: 6px; padding: 10px 14px; box-shadow: 0 6px 18px rgba(0,0,0,.5); display: none; align-items: center; gap: 10px; font-size: 12px; color: var(--fg); max-width: 320px; }
+#pwa-toast.show { display: flex; }
+#pwa-toast .msg { flex: 1; }
+#pwa-toast button { font-size: 11px; padding: 3px 9px; }
+.btn-spin { animation: btn-spin .9s linear infinite; display: inline-block; }
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
 /* Fullscreen preview */
 body.preview-full #sidebar,
 body.preview-full #editor-wrap,
@@ -118,9 +133,17 @@ body.preview-full #preview { width: 100% !important; max-width: 100% !important;
   <button class="primary" onclick="doCommit()">⊢ Commit</button>
   <button onclick="document.getElementById('upload-input').click()">↑ Upload</button>
   <input type="file" id="upload-input" accept=".html,.htm,.svg,.xml,.css,.js,.txt,.md,.jsx,.json" onchange="handleUpload(event)">
+  <div class="sep"></div>
+  <button id="btn-refresh" onclick="pwaRefresh()" title="Check for app update and reload from network"><span id="btn-refresh-glyph">⟳</span> Update</button>
   <div class="spacer"></div>
   <button id="btn-side" class="active" onclick="toggleSidebar()">◀ Side</button>
   <button id="btn-log" class="active" onclick="toggleLog()">▼ Log</button>
+</div>
+
+<div id="pwa-toast" role="status" aria-live="polite">
+  <span class="msg" id="pwa-toast-msg">New version available</span>
+  <button class="primary" id="pwa-toast-action" onclick="pwaApplyUpdate()">Reload</button>
+  <button onclick="pwaDismissToast()">Later</button>
 </div>
 
 <!-- Main -->
@@ -880,6 +903,123 @@ function init() {
 }
 
 init();
+
+/* ═══════════════════════════════════════════
+   PWA: service worker + update flow
+   ═══════════════════════════════════════════ */
+
+let pwaRegistration = null;
+let pwaWaitingWorker = null;
+let pwaReloading = false;
+
+function pwaShowToast(msg, actionLabel) {
+  $('pwa-toast-msg').textContent = msg;
+  $('pwa-toast-action').textContent = actionLabel || 'Reload';
+  $('pwa-toast').classList.add('show');
+}
+
+function pwaDismissToast() {
+  $('pwa-toast').classList.remove('show');
+}
+
+function pwaSetRefreshing(on) {
+  const glyph = $('btn-refresh-glyph');
+  const btn = $('btn-refresh');
+  if (!glyph || !btn) return;
+  glyph.classList.toggle('btn-spin', !!on);
+  btn.disabled = !!on;
+}
+
+function pwaTrackWaiting(worker) {
+  if (!worker) return;
+  pwaWaitingWorker = worker;
+  pwaShowToast('A newer version of the app is ready.', 'Reload');
+}
+
+async function pwaCheckForUpdate() {
+  if (!pwaRegistration) return false;
+  try { await pwaRegistration.update(); } catch (e) {}
+  if (pwaRegistration.waiting) {
+    pwaTrackWaiting(pwaRegistration.waiting);
+    return true;
+  }
+  return false;
+}
+
+function pwaApplyUpdate() {
+  if (pwaWaitingWorker) {
+    pwaReloading = true;
+    pwaWaitingWorker.postMessage('SKIP_WAITING');
+  } else {
+    location.reload();
+  }
+}
+
+async function pwaHardRefresh() {
+  pwaReloading = true;
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch (e) {}
+  // Bypass HTTP cache too.
+  location.reload();
+}
+
+async function pwaRefresh() {
+  if (pwaReloading) return;
+  pwaSetRefreshing(true);
+  try {
+    if (!('serviceWorker' in navigator) || !pwaRegistration) {
+      await pwaHardRefresh();
+      return;
+    }
+    const hasUpdate = await pwaCheckForUpdate();
+    if (hasUpdate) {
+      pwaApplyUpdate();
+      return;
+    }
+    // No new SW waiting — drop caches and reload to pull the latest shell.
+    await pwaHardRefresh();
+  } finally {
+    // If we reach here without reloading, clear the spinner.
+    if (!pwaReloading) pwaSetRefreshing(false);
+  }
+}
+
+function pwaRegister() {
+  if (!('serviceWorker' in navigator)) return;
+  // Avoid registering when running from a file:// URL.
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (pwaReloading) return;
+    pwaReloading = true;
+    location.reload();
+  });
+
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    pwaRegistration = reg;
+    if (reg.waiting && navigator.serviceWorker.controller) {
+      pwaTrackWaiting(reg.waiting);
+    }
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+          pwaTrackWaiting(nw);
+        }
+      });
+    });
+    // Periodic background check (every 30 min) plus on-focus check.
+    setInterval(() => pwaCheckForUpdate(), 30 * 60 * 1000);
+    window.addEventListener('focus', () => pwaCheckForUpdate());
+  }).catch(() => {});
+}
+
+pwaRegister();
 </script>
 </body>
 </html>
