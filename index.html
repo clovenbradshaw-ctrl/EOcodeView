@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EO TryIt Editor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=DM+Sans:wght@400;500;700&display=swap');
+:root {
+  --bg: #0b0b15; --bg1: #10101e; --bg2: #15152a; --bg3: #1c1c34;
+  --border: #1e1e36; --fg: #c9cdd3; --fg2: #888; --fg3: #555;
+  --accent: #a78bfa; --accent2: #c4b5fd;
+  --existence: #38bdf8; --structure: #a78bfa; --significance: #fbbf24;
+  --green: #4ade80; --red: #f87171; --amber: #fbbf24;
+  --mono: 'IBM Plex Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --sans: 'DM Sans', system-ui, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--sans); background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+button { font-family: var(--sans); cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-size: 12px; transition: all .15s; }
+button:hover { border-color: var(--accent); color: var(--accent2); }
+button.active { border-color: var(--accent); background: rgba(167,139,250,.12); color: var(--accent2); }
+button.primary { border-color: rgba(167,139,250,.4); background: rgba(167,139,250,.12); color: var(--accent2); }
+button.danger { border-color: rgba(248,113,113,.3); color: var(--red); }
+input, select { font-family: var(--sans); background: var(--bg1); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; color: var(--fg); font-size: 12px; outline: none; width: 100%; }
+select { cursor: pointer; }
+label { font-size: 10px; color: var(--fg3); text-transform: uppercase; letter-spacing: .05em; }
+
+/* Layout */
+#toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--bg1); border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+#toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+#toolbar .filename { color: var(--fg3); font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toolbar .mark { font-family: var(--mono); font-weight: 600; color: var(--accent); font-size: 14px; margin-right: 8px; }
+#toolbar .spacer { flex: 1; }
+
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* Sidebar */
+#sidebar { width: 240px; min-width: 200px; background: var(--bg1); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+#sidebar.hidden { display: none; }
+#side-tabs { display: flex; border-bottom: 1px solid var(--border); }
+.side-tab { flex: 1; padding: 6px 0; text-align: center; font-size: 11px; font-weight: 600; cursor: pointer; letter-spacing: .04em; text-transform: uppercase; border-bottom: 2px solid transparent; color: var(--fg3); }
+.side-tab.active { border-bottom-color: var(--accent); color: var(--accent2); background: rgba(167,139,250,.04); }
+#side-content { flex: 1; overflow: auto; padding: 8px; }
+
+/* File tree */
+.tree-dir { padding: 3px 6px; cursor: pointer; color: #8888aa; font-size: 12px; display: flex; align-items: center; gap: 4px; }
+.tree-dir:hover { color: var(--accent2); }
+.tree-file { padding: 3px 6px 3px 18px; cursor: pointer; font-size: 12px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-file:hover { background: var(--bg3); color: var(--fg); }
+
+/* Editor */
+#editor-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+#editor-bar { padding: 4px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--fg3); display: flex; justify-content: space-between; }
+#editor-container { flex: 1; display: flex; overflow: hidden; position: relative; }
+#line-nums { width: 48px; background: #08080f; color: #444; font-family: var(--mono); font-size: 13px; line-height: 20px; padding: 8px 4px 8px 0; text-align: right; overflow: hidden; user-select: none; flex-shrink: 0; border-right: 1px solid var(--border); }
+#line-nums div { height: 20px; padding-right: 8px; }
+#editor { flex: 1; resize: none; outline: none; border: none; padding: 8px 12px; background: var(--bg); color: #d4d4d8; font-family: var(--mono); font-size: 13px; line-height: 20px; tab-size: 2; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+
+/* Preview */
+#preview-wrap { flex: 1; display: flex; flex-direction: column; background: var(--bg2); border-left: 1px solid var(--border); overflow: hidden; min-width: 0; }
+#preview-bar { padding: 4px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--fg3); display: flex; justify-content: space-between; }
+#preview-frame-wrap { flex: 1; display: flex; justify-content: center; overflow: auto; background: #111; padding: 0; }
+#preview { border: none; background: #fff; flex: 1; display: block; width: 100%; }
+
+/* Changelog */
+#changelog { max-height: 200px; overflow: auto; background: #08080f; border-top: 1px solid var(--border); flex-shrink: 0; }
+#changelog.hidden { display: none; }
+#changelog-bar { padding: 4px 12px; font-size: 10px; color: var(--fg3); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid #111; display: flex; justify-content: space-between; position: sticky; top: 0; background: #08080f; z-index: 1; }
+.log-entry { padding: 3px 12px; display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid #0c0c14; font-size: 12px; }
+.log-time { font-size: 10px; color: #444; min-width: 52px; flex-shrink: 0; font-family: var(--mono); }
+.log-tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 700; font-family: var(--mono); margin-right: 2px; white-space: nowrap; }
+.log-notation { font-size: 11px; color: var(--fg2); font-family: var(--mono); white-space: nowrap; }
+.log-desc { color: var(--fg2); flex: 1; }
+.log-triad { font-size: 10px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; }
+.log-preview { font-size: 10px; color: #444; font-family: var(--mono); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.triad-existence { background: rgba(56,189,248,.12); color: var(--existence); }
+.triad-structure { background: rgba(167,139,250,.12); color: var(--structure); }
+.triad-significance { background: rgba(251,191,36,.12); color: var(--significance); }
+
+/* Matrix panel */
+.mx-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.mx-status { font-size: 11px; margin-top: 4px; }
+.mx-status.ok { color: var(--green); }
+.mx-status.err { color: var(--red); }
+.mx-snap { padding: 4px 6px; cursor: pointer; font-size: 11px; color: var(--fg2); border-bottom: 1px solid var(--bg); }
+.mx-snap:hover { background: var(--bg3); }
+.mx-snap-name { color: var(--accent2); }
+.mx-snap-meta { font-size: 10px; color: var(--fg3); }
+
+/* Face grid (small inline) */
+.face-grid { display: inline-grid; grid-template-columns: repeat(3, 14px); grid-template-rows: repeat(3, 14px); gap: 1px; vertical-align: middle; margin: 0 4px; }
+.face-cell { width: 14px; height: 14px; border-radius: 2px; background: rgba(255,255,255,.04); }
+.face-cell.lit { background: rgba(167,139,250,.5); }
+
+#upload-input { display: none; }
+
+/* Fullscreen preview */
+body.preview-full #sidebar,
+body.preview-full #editor-wrap,
+body.preview-full #changelog { display: none !important; }
+body.preview-full #preview-wrap { border-left: none; }
+body.preview-full #preview-frame-wrap { padding: 0 !important; }
+body.preview-full #preview { width: 100% !important; max-width: 100% !important; border-radius: 0 !important; box-shadow: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <span class="mark">EO●</span>
+  <span class="filename" id="filename">untitled.html</span>
+  <div class="sep"></div>
+  <button id="vp-desktop" class="active" onclick="setViewport(0)">⊞ Desktop</button>
+  <button id="vp-tablet" onclick="setViewport(1)">⊟ Tablet</button>
+  <button id="vp-mobile" onclick="setViewport(2)">⊡ Mobile</button>
+  <div class="sep"></div>
+  <button class="primary" onclick="doCommit()">⊢ Commit</button>
+  <button onclick="document.getElementById('upload-input').click()">↑ Upload</button>
+  <input type="file" id="upload-input" accept=".html,.htm,.svg,.xml,.css,.js,.txt,.md,.jsx,.json" onchange="handleUpload(event)">
+  <div class="spacer"></div>
+  <button id="btn-side" class="active" onclick="toggleSidebar()">◀ Side</button>
+  <button id="btn-log" class="active" onclick="toggleLog()">▼ Log</button>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="side-tabs">
+      <div class="side-tab active" onclick="switchSideTab('gh')">GitHub</div>
+      <div class="side-tab" onclick="switchSideTab('mx')">Matrix</div>
+    </div>
+    <div id="side-content"></div>
+  </div>
+
+  <!-- Editor -->
+  <div id="editor-wrap">
+    <div id="editor-bar">
+      <span id="editor-info">EDITOR — 0 lines</span>
+      <span id="editor-dirty"></span>
+    </div>
+    <div id="editor-container">
+      <div id="line-nums"></div>
+      <textarea id="editor" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+    </div>
+  </div>
+
+  <!-- Preview -->
+  <div id="preview-wrap">
+    <div id="preview-bar">
+      <span id="preview-info">PREVIEW — Desktop (100%)</span>
+      <span><button id="btn-fullscreen" onclick="toggleFullPreview()" style="font-size:11px;padding:2px 8px">⛶ Full</button></span>
+    </div>
+    <div id="preview-frame-wrap">
+      <iframe id="preview" sandbox="allow-scripts allow-same-origin" title="Preview"></iframe>
+    </div>
+  </div>
+</div>
+
+<!-- Changelog -->
+<div id="changelog">
+  <div id="changelog-bar">
+    <span id="changelog-count">EO Changelog — 0 operations</span>
+    <span style="cursor:pointer;color:var(--red)" onclick="clearLog()">Clear</span>
+  </div>
+  <div id="changelog-entries"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════
+   EO Operator Definitions — Three Faces
+   ═══════════════════════════════════════════ */
+
+const OPERATORS = {
+  NUL: { pos:1, glyph:'∅', triad:'existence',  mode:'differentiate', domain:'existence',  desc:'Non-transformation' },
+  SIG: { pos:2, glyph:'○', triad:'existence',  mode:'relate',        domain:'existence',  desc:'Attention' },
+  INS: { pos:3, glyph:'●', triad:'existence',  mode:'generate',      domain:'existence',  desc:'Instantiation' },
+  SEG: { pos:4, glyph:'｜', triad:'structure',  mode:'differentiate', domain:'structure',   desc:'Segmentation' },
+  CON: { pos:5, glyph:'⋈', triad:'structure',  mode:'relate',        domain:'structure',   desc:'Connection' },
+  SYN: { pos:6, glyph:'△', triad:'structure',  mode:'generate',      domain:'structure',   desc:'Synthesis' },
+  DEF: { pos:7, glyph:'⊢', triad:'significance',mode:'differentiate',domain:'significance',desc:'Definition' },
+  EVA: { pos:8, glyph:'⊨', triad:'significance',mode:'relate',       domain:'significance',desc:'Evaluation' },
+  REC: { pos:9, glyph:'⊛', triad:'significance',mode:'generate',     domain:'significance',desc:'Recontextualization' },
+};
+
+// Site Face: Domain × Object → nine terrains
+const SITES = {
+  Void:       { domain:'existence',  object:'ground',  row:0, col:0 },
+  Entity:     { domain:'existence',  object:'figure',  row:0, col:1 },
+  Kind:       { domain:'existence',  object:'pattern', row:0, col:2 },
+  Field:      { domain:'structure',  object:'ground',  row:1, col:0 },
+  Link:       { domain:'structure',  object:'figure',  row:1, col:1 },
+  Network:    { domain:'structure',  object:'pattern', row:1, col:2 },
+  Atmosphere: { domain:'significance',object:'ground', row:2, col:0 },
+  Lens:       { domain:'significance',object:'figure', row:2, col:1 },
+  Paradigm:   { domain:'significance',object:'pattern',row:2, col:2 },
+};
+
+// Stance Face (Resolution): Mode × Object → nine stances
+const STANCES = {
+  Clearing:    { mode:'differentiate', object:'ground',  row:0, col:0 },
+  Dissecting:  { mode:'differentiate', object:'figure',  row:0, col:1 },
+  Unraveling:  { mode:'differentiate', object:'pattern', row:0, col:2 },
+  Tending:     { mode:'relate',        object:'ground',  row:1, col:0 },
+  Binding:     { mode:'relate',        object:'figure',  row:1, col:1 },
+  Tracing:     { mode:'relate',        object:'pattern', row:1, col:2 },
+  Cultivating: { mode:'generate',      object:'ground',  row:2, col:0 },
+  Making:      { mode:'generate',      object:'figure',  row:2, col:1 },
+  Composing:   { mode:'generate',      object:'pattern', row:2, col:2 },
+};
+
+const TRIAD_COLORS = { existence: '#38bdf8', structure: '#a78bfa', significance: '#fbbf24' };
+
+// Three-face classification: what operator, what stance, what site
+// Stance is constrained by Mode: operator's mode determines the stance row.
+// Site is constrained by Domain: operator's domain determines the site row.
+// Object column determined by the character of the change.
+function classify(changeType, context) {
+  switch (changeType) {
+    case 'insert':
+      // INS(Making, Entity) — creating specific new content. Gravity well.
+      return { op: 'INS', stance: 'Making', site: 'Entity' };
+    case 'delete':
+      // DEF(Clearing, Void) — definition resolving to void. Entity→Void trajectory.
+      // "When a DEF resolves to Void on the Site Face, that's clearing."
+      return { op: 'DEF', stance: 'Clearing', site: 'Void' };
+    case 'modify':
+      // DEF(Dissecting, Entity) — redefining what holds at a specific entity.
+      return { op: 'DEF', stance: 'Dissecting', site: 'Entity' };
+    case 'load':
+      // CON(Binding, Link) — connecting a specific external resource across a boundary.
+      return { op: 'CON', stance: 'Binding', site: 'Link' };
+    case 'save':
+      // SEG(Tending, Field) — drawing a boundary (snapshot) to maintain the relational field.
+      return { op: 'SEG', stance: 'Tending', site: 'Field' };
+    case 'bulk':
+      // REC(Composing, Paradigm) — frame restructuring, the interpretive structure itself shifts.
+      return { op: 'REC', stance: 'Composing', site: 'Paradigm' };
+    case 'noop':
+      // NUL(Clearing, Void) — observation, the ground capacity.
+      return { op: 'NUL', stance: 'Clearing', site: 'Void' };
+    case 'upload':
+      // CON(Binding, Link) — same structural act as loading: connecting across a boundary.
+      return { op: 'CON', stance: 'Binding', site: 'Link' };
+    case 'attention':
+      // SIG(Binding, Entity) — directing attention to a specific thing.
+      return { op: 'SIG', stance: 'Binding', site: 'Entity' };
+    case 'merge':
+      // SYN(Making, Link) — producing a derived whole from connected parts.
+      return { op: 'SYN', stance: 'Making', site: 'Link' };
+    case 'redefine-pattern':
+      // DEF(Unraveling, Kind) — definition that deconstructs a recurring pattern.
+      return { op: 'DEF', stance: 'Unraveling', site: 'Kind' };
+    case 'evaluate':
+      // EVA(Binding, Lens) — judging through a specific interpretive frame.
+      return { op: 'EVA', stance: 'Binding', site: 'Lens' };
+    default:
+      return { op: 'NUL', stance: 'Clearing', site: 'Void' };
+  }
+}
+
+function makeFaceGrid(face, row, col) {
+  // Returns a small 3x3 HTML grid with the active cell highlighted
+  let html = '<span class="face-grid" title="' + face + '">';
+  for (let r = 0; r < 3; r++)
+    for (let c = 0; c < 3; c++)
+      html += '<span class="face-cell' + (r === row && c === col ? ' lit' : '') + '"></span>';
+  html += '</span>';
+  return html;
+}
+
+/* ═══════════════════════════════════════════
+   Diff Engine
+   ═══════════════════════════════════════════ */
+
+function diffToEO(oldText, newText) {
+  if (oldText === newText) return [{ type: 'noop', desc: 'No changes detected' }];
+
+  const oldL = oldText.split('\n');
+  const newL = newText.split('\n');
+  const m = oldL.length, n = newL.length;
+
+  // Bulk replacement threshold: if >70% of lines changed
+  if (m > 2000 || n > 2000) {
+    return [{ type: 'bulk', desc: `Bulk replace: ${m}→${n} lines` }];
+  }
+
+  // LCS
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = oldL[i-1] === newL[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+
+  const matches = [];
+  let i = m, j = n;
+  while (i > 0 && j > 0) {
+    if (oldL[i-1] === newL[j-1]) { matches.unshift([i-1, j-1]); i--; j--; }
+    else if (dp[i-1][j] >= dp[i][j-1]) i--;
+    else j--;
+  }
+
+  // Check bulk threshold
+  const matchRatio = matches.length / Math.max(m, n);
+  if (matchRatio < 0.3 && Math.max(m, n) > 10) {
+    return [{ type: 'bulk', desc: `Frame restructured: ${m}→${n} lines (${Math.round((1-matchRatio)*100)}% changed)` }];
+  }
+
+  const ops = [];
+  let oi = 0, ni = 0;
+
+  for (const [mo, mn] of matches) {
+    const delCount = mo - oi;
+    const insCount = mn - ni;
+
+    if (delCount > 0 && insCount > 0) {
+      const changed = Math.min(delCount, insCount);
+      // Modified lines → DEF(Dissecting, Entity)
+      ops.push({
+        type: 'modify',
+        desc: `Modified L${ni+1}${changed > 1 ? '–' + (ni+changed) : ''}`,
+        preview: newL.slice(ni, ni + changed).join('\n').slice(0, 100),
+      });
+      if (delCount > changed) {
+        ops.push({ type: 'delete', desc: `Cleared ${delCount - changed} lines after L${oi + changed + 1}` });
+      }
+      if (insCount > changed) {
+        ops.push({
+          type: 'insert',
+          desc: `Inserted ${insCount - changed} lines at L${ni + changed + 1}`,
+          preview: newL.slice(ni + changed, mn).join('\n').slice(0, 100),
+        });
+      }
+    } else if (delCount > 0) {
+      ops.push({ type: 'delete', desc: `Cleared ${delCount} lines at L${oi + 1}` });
+    } else if (insCount > 0) {
+      ops.push({
+        type: 'insert',
+        desc: `Inserted ${insCount} lines at L${ni + 1}`,
+        preview: newL.slice(ni, mn).join('\n').slice(0, 100),
+      });
+    }
+    oi = mo + 1;
+    ni = mn + 1;
+  }
+
+  if (oi < m) ops.push({ type: 'delete', desc: `Cleared ${m - oi} trailing lines` });
+  if (ni < n) ops.push({
+    type: 'insert',
+    desc: `Inserted ${n - ni} trailing lines`,
+    preview: newL.slice(ni).join('\n').slice(0, 100),
+  });
+
+  return ops;
+}
+
+/* ═══════════════════════════════════════════
+   State
+   ═══════════════════════════════════════════ */
+
+const DEFAULT_HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <title>EO TryIt</title>
+  <style>
+    body { font-family: Georgia, serif; padding: 2rem; background: #0f0f1a; color: #d4d4d8; }
+    h1 { color: #a78bfa; border-bottom: 2px solid #a78bfa44; padding-bottom: .5rem; }
+    p { line-height: 1.8; max-width: 60ch; }
+    code { background: #ffffff11; padding: 2px 6px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>EO TryIt Editor</h1>
+  <p>Edit HTML on the left. Preview renders on the right.</p>
+  <p>Hit <code>⊢ Commit</code> to compute the diff and log it as EO operations with three-face notation.</p>
+  <p>Each change is classified by Act (what operator), Site (what terrain), and Stance (what engagement grain).</p>
+</body>
+</html>`;
+
+let state = {
+  code: DEFAULT_HTML,
+  baseCode: DEFAULT_HTML,
+  fileName: 'untitled.html',
+  viewport: 0,
+  changelog: [],
+  sideTab: 'gh',
+  sidebarVisible: true,
+  logVisible: true,
+  // GitHub
+  ghRepo: 'clovenbradshaw-ctrl/EO-DB',
+  ghTree: null,
+  ghLoading: false,
+  // Matrix
+  mx: { hs: 'https://hyphae.social:8008', user: '', pass: '', token: '', userId: '', rooms: [], roomNames: {}, selectedRoom: '', snapshots: [], status: '', statusOk: true },
+};
+
+const VIEWPORTS = [
+  { label: 'Desktop', w: '100%' },
+  { label: 'Tablet', w: '768px' },
+  { label: 'Mobile', w: '375px' },
+];
+
+/* ═══════════════════════════════════════════
+   DOM helpers
+   ═══════════════════════════════════════════ */
+
+const $ = id => document.getElementById(id);
+const editor = () => $('editor');
+const lineNums = () => $('line-nums');
+
+function updateLineNums() {
+  const count = state.code.split('\n').length;
+  const el = lineNums();
+  let html = '';
+  for (let i = 1; i <= count; i++) html += '<div>' + i + '</div>';
+  el.innerHTML = html;
+  $('editor-info').textContent = `EDITOR — ${count} lines · ${state.code.length} chars`;
+  $('editor-dirty').textContent = state.code !== state.baseCode ? '● unsaved' : '';
+}
+
+function updatePreview() {
+  $('preview').srcdoc = state.code;
+}
+
+function setViewport(idx) {
+  state.viewport = idx;
+  document.querySelectorAll('#toolbar button[id^="vp-"]').forEach((b, i) => b.classList.toggle('active', i === idx));
+  const vp = VIEWPORTS[idx];
+  const wrap = $('preview-frame-wrap');
+  const iframe = $('preview');
+  if (idx === 0) {
+    wrap.style.padding = '0';
+    iframe.style.maxWidth = '100%';
+    iframe.style.width = '100%';
+    iframe.style.borderRadius = '0';
+    iframe.style.boxShadow = 'none';
+  } else {
+    wrap.style.padding = '12px';
+    iframe.style.maxWidth = '100%';
+    iframe.style.width = vp.w;
+    iframe.style.borderRadius = '6px';
+    iframe.style.boxShadow = '0 0 0 1px rgba(42,42,64,.3)';
+  }
+  $('preview-info').textContent = `PREVIEW — ${vp.label} (${vp.w})`;
+}
+
+/* ═══════════════════════════════════════════
+   Changelog
+   ═══════════════════════════════════════════ */
+
+function addLogEntries(rawOps, source) {
+  const now = Date.now();
+  for (const raw of rawOps) {
+    const cls = classify(raw.type, raw);
+    const op = OPERATORS[cls.op];
+    const stance = STANCES[cls.stance];
+    const site = SITES[cls.site];
+    state.changelog.unshift({
+      ts: now,
+      op: cls.op,
+      opData: op,
+      stance: cls.stance,
+      stanceData: stance,
+      site: cls.site,
+      siteData: site,
+      desc: raw.desc || '',
+      preview: raw.preview || '',
+      source: source || 'editor',
+    });
+  }
+  renderChangelog();
+}
+
+function renderChangelog() {
+  const el = $('changelog-entries');
+  $('changelog-count').textContent = `EO Changelog — ${state.changelog.length} operations`;
+
+  if (state.changelog.length === 0) {
+    el.innerHTML = '<div style="padding:12px;color:#444;font-size:12px;text-align:center">No operations yet. Edit code and press <span style="color:var(--accent)">⊢ Commit</span> to track changes.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const entry of state.changelog) {
+    const tc = TRIAD_COLORS[entry.opData.triad];
+    const triadClass = 'triad-' + entry.opData.triad;
+    const stanceGrid = makeFaceGrid('Stance', entry.stanceData.row, entry.stanceData.col);
+    const siteGrid = makeFaceGrid('Site', entry.siteData.row, entry.siteData.col);
+
+    html += `<div class="log-entry">
+      <span class="log-time">${new Date(entry.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
+      <span class="log-tag" style="background:${tc}22;color:${tc}">${entry.opData.glyph} ${entry.op}</span>
+      <span class="log-notation">${entry.op}(${entry.stance}, ${entry.site})</span>
+      ${stanceGrid}${siteGrid}
+      <span class="log-desc">${entry.desc}</span>
+      <span class="log-triad ${triadClass}">${entry.opData.triad}</span>
+      ${entry.preview ? `<span class="log-preview">${escHtml(entry.preview)}</span>` : ''}
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function clearLog() { state.changelog = []; renderChangelog(); }
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ═══════════════════════════════════════════
+   Commit
+   ═══════════════════════════════════════════ */
+
+function doCommit() {
+  const ops = diffToEO(state.baseCode, state.code);
+  addLogEntries(ops, 'editor');
+  state.baseCode = state.code;
+  updateLineNums();
+
+  // Push to Matrix if connected
+  if (state.mx.token && state.mx.selectedRoom) {
+    mxSendEvent(state.mx.selectedRoom, 'com.eo.changelog', {
+      ops: ops.map(o => ({ ...o, ...classify(o.type) })),
+      fileName: state.fileName,
+      timestamp: Date.now(),
+    }).catch(() => {});
+  }
+}
+
+/* ═══════════════════════════════════════════
+   File Upload
+   ═══════════════════════════════════════════ */
+
+function handleUpload(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    state.code = ev.target.result;
+    state.fileName = file.name;
+    editor().value = state.code;
+    updateLineNums();
+    updatePreview();
+    $('filename').textContent = file.name;
+    addLogEntries([{ type: 'upload', desc: `Uploaded ${file.name} (${Math.round(file.size/1024)}KB)` }], 'upload');
+    state.baseCode = state.code;
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+/* ═══════════════════════════════════════════
+   GitHub
+   ═══════════════════════════════════════════ */
+
+async function ghFetchTree() {
+  state.ghLoading = true;
+  renderSidebar();
+  try {
+    let r = await fetch(`https://api.github.com/repos/${state.ghRepo}/git/trees/main?recursive=1`);
+    if (!r.ok) r = await fetch(`https://api.github.com/repos/${state.ghRepo}/git/trees/master?recursive=1`);
+    if (!r.ok) throw new Error('Could not fetch repo');
+    const data = await r.json();
+    state.ghTree = buildGhTree(data.tree || []);
+  } catch (err) {
+    state.ghTree = null;
+    alert('GitHub error: ' + err.message);
+  }
+  state.ghLoading = false;
+  renderSidebar();
+}
+
+async function ghLoadFile(path) {
+  try {
+    const r = await fetch(`https://api.github.com/repos/${state.ghRepo}/contents/${path}`);
+    if (!r.ok) throw new Error('Could not fetch file');
+    const data = await r.json();
+    const content = atob(data.content.replace(/\n/g, ''));
+    state.code = content;
+    state.fileName = path.split('/').pop();
+    editor().value = state.code;
+    updateLineNums();
+    updatePreview();
+    $('filename').textContent = state.fileName;
+    addLogEntries([{ type: 'load', desc: `Loaded ${path} from GitHub` }], 'github');
+    state.baseCode = state.code;
+  } catch (err) {
+    alert('Error loading file: ' + err.message);
+  }
+}
+
+function buildGhTree(items) {
+  const root = { name: '/', children: {}, files: [] };
+  for (const item of items) {
+    const parts = item.path.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      if (i === parts.length - 1) {
+        if (item.type === 'blob') node.files.push({ name: parts[i], path: item.path });
+        else if (!node.children[parts[i]]) node.children[parts[i]] = { name: parts[i], children: {}, files: [] };
+      } else {
+        if (!node.children[parts[i]]) node.children[parts[i]] = { name: parts[i], children: {}, files: [] };
+        node = node.children[parts[i]];
+      }
+    }
+  }
+  return root;
+}
+
+function renderGhTree(node, depth) {
+  let html = '';
+  const dirs = Object.values(node.children).sort((a,b) => a.name.localeCompare(b.name));
+  const files = [...node.files].sort((a,b) => a.name.localeCompare(b.name));
+  for (const d of dirs) {
+    const id = 'dir-' + d.name.replace(/[^a-zA-Z0-9]/g, '_') + '-' + depth;
+    html += `<div class="tree-dir" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'" style="padding-left:${depth*12+6}px">
+      <span style="font-size:10px;color:#666">▶</span> <span style="color:var(--accent2)">📁</span> ${escHtml(d.name)}
+    </div><div style="display:${depth < 1 ? 'block' : 'none'}">`;
+    html += renderGhTree(d, depth + 1);
+    html += '</div>';
+  }
+  for (const f of files) {
+    html += `<div class="tree-file" style="padding-left:${depth*12+18}px" onclick="ghLoadFile('${f.path.replace(/'/g, "\\'")}')">${escHtml(f.name)}</div>`;
+  }
+  return html;
+}
+
+/* ═══════════════════════════════════════════
+   Matrix
+   ═══════════════════════════════════════════ */
+
+async function mxLogin() {
+  const { hs, user, pass } = state.mx;
+  state.mx.status = 'Connecting...'; state.mx.statusOk = true; renderSidebar();
+  try {
+    const r = await fetch(`${hs}/_matrix/client/v3/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'm.login.password', identifier: { type: 'm.id.user', user }, password: pass }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    const data = await r.json();
+    state.mx.token = data.access_token;
+    state.mx.userId = data.user_id;
+    // Fetch rooms
+    const rr = await fetch(`${hs}/_matrix/client/v3/joined_rooms`, { headers: { Authorization: `Bearer ${data.access_token}` } });
+    const rooms = (await rr.json()).joined_rooms || [];
+    state.mx.rooms = rooms;
+    // Fetch room names
+    for (const rid of rooms.slice(0, 30)) {
+      try {
+        const nr = await fetch(`${hs}/_matrix/client/v3/rooms/${encodeURIComponent(rid)}/state/m.room.name`, { headers: { Authorization: `Bearer ${data.access_token}` } });
+        if (nr.ok) state.mx.roomNames[rid] = (await nr.json()).name;
+      } catch {}
+    }
+    state.mx.status = `Logged in as ${data.user_id}`; state.mx.statusOk = true;
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false;
+  }
+  renderSidebar();
+}
+
+async function mxCreateRoom() {
+  const name = $('mx-new-room')?.value?.trim();
+  if (!name) return;
+  try {
+    const r = await fetch(`${state.mx.hs}/_matrix/client/v3/createRoom`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
+      body: JSON.stringify({ name, topic: 'EO TryIt Editor workspace', visibility: 'private' }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || 'Failed');
+    const rid = (await r.json()).room_id;
+    state.mx.rooms.unshift(rid);
+    state.mx.roomNames[rid] = name;
+    state.mx.selectedRoom = rid;
+    state.mx.status = `Created: ${name}`; state.mx.statusOk = true;
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false;
+  }
+  renderSidebar();
+}
+
+async function mxSendEvent(roomId, type, content) {
+  const txn = `eo_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  return fetch(`${state.mx.hs}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/${encodeURIComponent(type)}/${txn}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.mx.token}` },
+    body: JSON.stringify(content),
+  });
+}
+
+async function mxSaveSnapshot() {
+  if (!state.mx.token || !state.mx.selectedRoom) return;
+  state.mx.status = 'Saving...'; state.mx.statusOk = true; renderSidebar();
+  try {
+    // Upload to media store
+    const blob = new Blob([state.code], { type: 'text/html' });
+    const ur = await fetch(`${state.mx.hs}/_matrix/media/v3/upload?filename=${encodeURIComponent(state.fileName)}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${state.mx.token}`, 'Content-Type': 'text/html' }, body: blob,
+    });
+    if (!ur.ok) throw new Error('Upload failed');
+    const mxcUri = (await ur.json()).content_uri;
+    // Send snapshot event
+    await mxSendEvent(state.mx.selectedRoom, 'com.eo.snapshot', {
+      filename: state.fileName, mxc_uri: mxcUri, timestamp: Date.now(),
+      line_count: state.code.split('\n').length, size: state.code.length,
+    });
+    addLogEntries([{ type: 'save', desc: `Snapshot → Matrix (${mxcUri.slice(0, 32)}…)` }], 'matrix');
+    state.mx.status = 'Saved ✓'; state.mx.statusOk = true;
+    mxLoadSnapshots();
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false;
+  }
+  renderSidebar();
+}
+
+async function mxLoadSnapshots() {
+  if (!state.mx.token || !state.mx.selectedRoom) return;
+  try {
+    const filter = encodeURIComponent(JSON.stringify({ types: ['com.eo.snapshot'] }));
+    const r = await fetch(`${state.mx.hs}/_matrix/client/v3/rooms/${encodeURIComponent(state.mx.selectedRoom)}/messages?dir=b&limit=30&filter=${filter}`, {
+      headers: { Authorization: `Bearer ${state.mx.token}` },
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    state.mx.snapshots = (data.chunk || []).filter(e => e.type === 'com.eo.snapshot').map(e => ({
+      filename: e.content?.filename || '?',
+      mxcUri: e.content?.mxc_uri,
+      ts: e.content?.timestamp || e.origin_server_ts,
+      lines: e.content?.line_count,
+    }));
+  } catch {}
+  renderSidebar();
+}
+
+async function mxLoadSnapshot(mxcUri, name) {
+  try {
+    const [, serverName, mediaId] = mxcUri.match(/^mxc:\/\/([^/]+)\/(.+)$/) || [];
+    if (!serverName) throw new Error('Invalid mxc URI');
+    const r = await fetch(`${state.mx.hs}/_matrix/media/v3/download/${serverName}/${mediaId}`);
+    if (!r.ok) throw new Error('Download failed');
+    const content = await r.text();
+    state.code = content;
+    state.fileName = name;
+    editor().value = state.code;
+    updateLineNums();
+    updatePreview();
+    $('filename').textContent = name;
+    addLogEntries([{ type: 'load', desc: `Loaded from Matrix: ${name}` }], 'matrix');
+    state.baseCode = state.code;
+  } catch (err) {
+    state.mx.status = err.message; state.mx.statusOk = false;
+    renderSidebar();
+  }
+}
+
+function mxLogout() {
+  state.mx.token = ''; state.mx.userId = ''; state.mx.rooms = [];
+  state.mx.roomNames = {}; state.mx.selectedRoom = ''; state.mx.snapshots = [];
+  state.mx.status = ''; renderSidebar();
+}
+
+function mxSelectRoom(rid) {
+  state.mx.selectedRoom = rid;
+  mxLoadSnapshots();
+}
+
+/* ═══════════════════════════════════════════
+   Sidebar Rendering
+   ═══════════════════════════════════════════ */
+
+function switchSideTab(tab) {
+  state.sideTab = tab;
+  document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', (i === 0 && tab === 'gh') || (i === 1 && tab === 'mx')));
+  renderSidebar();
+}
+
+function renderSidebar() {
+  const el = $('side-content');
+  if (state.sideTab === 'gh') {
+    let html = `<div style="margin-bottom:6px"><input id="gh-repo" value="${escHtml(state.ghRepo)}" placeholder="owner/repo" onchange="state.ghRepo=this.value"></div>`;
+    html += `<div style="display:flex;gap:4px;margin-bottom:8px">
+      <button class="primary" style="flex:1" onclick="ghFetchTree()" ${state.ghLoading?'disabled':''}>${state.ghLoading ? 'Loading…' : 'Load Repo'}</button>
+      ${state.ghTree ? '<button onclick="ghFetchTree()" title="Refresh">⟳</button>' : ''}
+    </div>`;
+    if (state.ghTree) html += renderGhTree(state.ghTree, 0);
+    el.innerHTML = html;
+  } else {
+    if (!state.mx.token) {
+      el.innerHTML = `
+        <div class="mx-field"><label>Homeserver</label><input id="mx-hs" value="${escHtml(state.mx.hs)}" onchange="state.mx.hs=this.value"></div>
+        <div class="mx-field"><label>Username</label><input id="mx-user" value="${escHtml(state.mx.user)}" onchange="state.mx.user=this.value" placeholder="username"></div>
+        <div class="mx-field"><label>Password</label><input id="mx-pass" type="password" value="" onchange="state.mx.pass=this.value" onkeydown="if(event.key==='Enter')mxLogin()"></div>
+        <button class="primary" onclick="mxLogin()" style="width:100%;margin-top:4px">Login</button>
+        ${state.mx.status ? `<div class="mx-status ${state.mx.statusOk?'ok':'err'}">${escHtml(state.mx.status)}</div>` : ''}`;
+    } else {
+      let html = `<div style="font-size:11px;color:var(--green);margin-bottom:8px">● ${escHtml(state.mx.userId)}</div>`;
+      html += `<div class="mx-field"><label>Room</label><select onchange="mxSelectRoom(this.value)"><option value="">Select a room…</option>`;
+      for (const r of state.mx.rooms) {
+        html += `<option value="${escHtml(r)}" ${r === state.mx.selectedRoom ? 'selected' : ''}>${escHtml(state.mx.roomNames[r] || r)}</option>`;
+      }
+      html += `</select></div>`;
+      html += `<div style="display:flex;gap:4px;margin-bottom:6px"><input id="mx-new-room" placeholder="New room name" onkeydown="if(event.key==='Enter')mxCreateRoom()"><button onclick="mxCreateRoom()">+</button></div>`;
+      html += `<button class="primary" onclick="mxSaveSnapshot()" style="width:100%;margin-bottom:6px" ${!state.mx.selectedRoom?'disabled':''}>↑ Save Snapshot</button>`;
+      if (state.mx.status) html += `<div class="mx-status ${state.mx.statusOk?'ok':'err'}">${escHtml(state.mx.status)}</div>`;
+      if (state.mx.snapshots.length > 0) {
+        html += `<div style="margin-top:8px"><label>Snapshots</label>`;
+        for (const s of state.mx.snapshots) {
+          html += `<div class="mx-snap" onclick="mxLoadSnapshot('${s.mxcUri}','${escHtml(s.filename)}')">
+            <div class="mx-snap-name">${escHtml(s.filename)}</div>
+            <div class="mx-snap-meta">${new Date(s.ts).toLocaleString()} · ${s.lines} lines</div>
+          </div>`;
+        }
+        html += '</div>';
+      }
+      html += `<button class="danger" onclick="mxLogout()" style="width:100%;margin-top:12px;font-size:11px">Logout</button>`;
+      el.innerHTML = html;
+    }
+  }
+}
+
+function toggleSidebar() {
+  state.sidebarVisible = !state.sidebarVisible;
+  $('sidebar').classList.toggle('hidden', !state.sidebarVisible);
+  $('btn-side').classList.toggle('active', state.sidebarVisible);
+  $('btn-side').textContent = state.sidebarVisible ? '◀ Side' : '▶ Side';
+}
+
+function toggleLog() {
+  state.logVisible = !state.logVisible;
+  $('changelog').classList.toggle('hidden', !state.logVisible);
+  $('btn-log').classList.toggle('active', state.logVisible);
+  $('btn-log').textContent = state.logVisible ? '▼ Log' : '▲ Log';
+}
+
+function toggleFullPreview() {
+  const full = document.body.classList.toggle('preview-full');
+  $('btn-fullscreen').textContent = full ? '⛶ Exit' : '⛶ Full';
+  $('btn-fullscreen').classList.toggle('active', full);
+}
+
+/* ═══════════════════════════════════════════
+   Init
+   ═══════════════════════════════════════════ */
+
+function init() {
+  const ed = editor();
+  ed.value = state.code;
+
+  // Live update
+  ed.addEventListener('input', () => {
+    state.code = ed.value;
+    updateLineNums();
+    updatePreview();
+  });
+
+  // Sync scroll
+  ed.addEventListener('scroll', () => { lineNums().scrollTop = ed.scrollTop; });
+
+  // Tab key
+  ed.addEventListener('keydown', e => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = ed.selectionStart, end = ed.selectionEnd;
+      ed.value = ed.value.substring(0, start) + '  ' + ed.value.substring(end);
+      ed.selectionStart = ed.selectionEnd = start + 2;
+      state.code = ed.value;
+      updateLineNums();
+    }
+    if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      doCommit();
+    }
+  });
+
+  updateLineNums();
+  updatePreview();
+  renderChangelog();
+  renderSidebar();
+  setViewport(0);
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.body.classList.contains('preview-full')) toggleFullPreview();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
